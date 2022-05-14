@@ -11,7 +11,7 @@ app.use(express.json())
 
 //connect with mongodb
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.mlvfx.mongodb.net/myFirstDatabase?retryWrites=true&w=majority`;
-console.log(uri)
+
 const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true, serverApi: ServerApiVersion.v1 })
 
 //build api with mongodb
@@ -19,12 +19,45 @@ async function run() {
     try {
         await client.connect()
         const serviceCollection = client.db('doctors_portal').collection('services')
+        const bookingCollection = client.db('doctors_portal').collection('bookings')
 
         app.get('/services', async (req, res) => {
             const query = {}
             const cursor = serviceCollection.find(query)
             const service = await cursor.toArray()
             res.send(service)
+        })
+
+        app.get('/available', async (req, res) => {
+            const date = req.query.date || 'May 14, 2022'
+
+            //get all services - 01
+            const services = await serviceCollection.find().toArray()
+
+            //get booking service - 02
+            const query = { date: date }
+            const booking = await bookingCollection.find(query).toArray()
+
+            //for each service, find booking that service
+            services.forEach(service =>{
+                const serviceBooking = booking.filter(b => b.treatment === service.name)
+                const bookedSlots = serviceBooking.map(s => s.slot)
+                //service.booked = serviceBooking.map(s => s.slot)
+                const available = service.slots.filter(slot => !bookedSlots.includes(slot))
+                service.slots = available
+            })
+            res.send(services)
+        })
+
+        app.post('/booking', async (req, res) => {
+            const booking = req.body
+            const query = { treatment: booking.treatment, date: booking.date, patient: booking.patient }
+            const exist = await bookingCollection.findOne(query)
+            if (exist) {
+                return res.send({ success: false, booking: exist })
+            }
+            const result = await bookingCollection.insertOne(booking)
+            return res.send({ success: true, result })
         })
     }
     finally {
