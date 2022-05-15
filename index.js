@@ -2,6 +2,7 @@ const express = require('express')
 const cors = require('cors')
 const { MongoClient, ServerApiVersion } = require('mongodb');
 require('dotenv').config()
+const jwt = require('jsonwebtoken');
 const app = express()
 const port = process.env.PORT || 5000
 
@@ -13,6 +14,22 @@ app.use(express.json())
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.mlvfx.mongodb.net/myFirstDatabase?retryWrites=true&w=majority`;
 
 const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true, serverApi: ServerApiVersion.v1 })
+
+function jwtToken(req, res, next) {
+    const authHeader = req.headers.authorization
+    if (!authHeader) {
+        return res.status(401).send({ message: 'UnAuthorized' })
+    }
+    const token = authHeader.split(' ')[1]
+    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, function (err, decoded) {
+        if (err) {
+            return res.status(403).send({ message: 'Forbidden access' })
+        }
+        //console.log(decoded) // bar
+        req.decoded = decoded
+        next()
+    });
+}
 
 //build api with mongodb
 async function run() {
@@ -32,12 +49,14 @@ async function run() {
         app.put('/user/:email', async (req, res) => {
             const email = req.params.email
             const user = req.body
-            const filter = {email: email}
-            const options = {upsert: true}
+            const filter = { email: email }
+            const options = { upsert: true }
             const updateDoc = {
                 $set: user,
             }
-            const result = await userCollection.updateOne( filter, updateDoc, options)
+            const result = await userCollection.updateOne(filter, updateDoc, options)
+            const token = jwt.sign({ email: email }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' })
+            res.send({ result, token })
         })
 
         app.get('/available', async (req, res) => {
@@ -51,7 +70,7 @@ async function run() {
             const booking = await bookingCollection.find(query).toArray()
 
             //for each service, find booking that service
-            services.forEach(service =>{
+            services.forEach(service => {
                 const serviceBooking = booking.filter(b => b.treatment === service.name)
                 const bookedSlots = serviceBooking.map(s => s.slot)
                 //service.booked = serviceBooking.map(s => s.slot)
@@ -61,12 +80,18 @@ async function run() {
             res.send(services)
         })
 
-        app.get('/booking', async (req, res) => {
+        app.get('/booking', jwtToken, async (req, res) => {
             const patient = req.query.patient
-            const query = {patient: patient}
-            const booking = await bookingCollection.find(query).toArray()
-            res.send(booking)
-
+            const decodedEmail = req.decoded.email
+            if (patient === decodedEmail) {
+                const query = { patient: patient }
+                const booking = await bookingCollection.find(query).toArray()
+                return res.send(booking)
+            }else{
+                return res.status(403).send({ message: 'Forbidden access' }) 
+            }
+            //const authorization = req.headers.authorization
+            //console.log('auth headers', authorization)
         })
 
         app.post('/booking', async (req, res) => {
