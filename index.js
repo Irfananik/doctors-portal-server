@@ -1,9 +1,12 @@
 const express = require('express')
 const cors = require('cors')
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config()
 const nodemailer = require('nodemailer');
 const sgTransport = require('nodemailer-sendgrid-transport');
+
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
+
 const jwt = require('jsonwebtoken');
 const app = express()
 const port = process.env.PORT || 5000
@@ -46,8 +49,39 @@ function sendAppointmentEmail(booking) {
     const email = {
         from: process.env.EMAIL_SENDER,
         to: patient,
-        subject: `Your appointment for ${treatment} is on ${date} at ${slot} is confirmed`,
-        text: `Hello Deare, Your appointment for ${treatment} is on ${date} at ${slot} is confirmed`,
+        subject: `Your appointment for is on ${date} at ${slot} is selected`,
+        text: `Hello Deare ${patientName}, Your appointment for ${treatment} is on ${date} at ${slot} is selected.`,
+        html: `
+            <div>
+                <p> Hello ${patientName}, </p>
+                <h3>Your Appointment for ${treatment} is selected. Please pay amounts of this appointment using your credit card.</h3>
+                <p>Looking forward to seeing you on ${date} at ${slot}.</p>
+                
+                <h3>Our Address</h3>
+                <p>bashundhara, dhaka</p>
+                <p>Bangladesh</p>
+                <a href="https://web.programming-hero.com/">unsubscribe</a>
+            </div>
+        `
+    }
+    emailClient.sendMail(email, function (err, info) {
+        if (err) {
+            console.log(err);
+        }
+        else {
+            console.log('Message sent: ', info);
+        }
+    })
+}
+
+
+function sendPaymentEmail(booking) {
+    const { patient, patientName, treatment, date, slot } = booking
+    const email = {
+        from: process.env.EMAIL_SENDER,
+        to: patient,
+        subject: `We have received your payment for ${treatment} is on ${date} at ${slot} is confirmed`,
+        text: `Hello Deare, Your payment for this appointment ${treatment} is on ${date} at ${slot} is confirmed`,
         html: `
             <div>
                 <p> Hello ${patientName}, </p>
@@ -79,6 +113,7 @@ async function run() {
         const bookingCollection = client.db('doctors_portal').collection('bookings')
         const userCollection = client.db('doctors_portal').collection('users')
         const doctorCollection = client.db('doctors_portal').collection('doctors')
+        const paymentCollection = client.db('doctors_portal').collection('payments')
 
         const jwtAdmin = async (req, res, next) => {
             const requester = req.decoded.email
@@ -89,6 +124,18 @@ async function run() {
                 res.status(403).send({ message: 'Forbidden' })
             }
         }
+
+        app.post('/create-payment-intent',jwtToken, async (req, res) => {
+            const service = req.body;
+            const price = service.price;
+            const amount = price * 100;
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: 'usd',
+                payment_method_types: ['card']
+            });
+            res.send({ clientSecret: paymentIntent.client_secret })
+        });
 
         app.get('/services', async (req, res) => {
             const query = {}
@@ -167,6 +214,13 @@ async function run() {
             //console.log('auth headers', authorization)
         })
 
+        app.get('/booking/:id', jwtToken, async (req, res) => {
+            const id = req.params.id
+            const query = { _id: ObjectId(id) }
+            const booking = await bookingCollection.findOne(query)
+            res.send(booking)
+        })
+
         app.post('/booking', async (req, res) => {
             const booking = req.body
             const query = { treatment: booking.treatment, date: booking.date, patient: booking.patient }
@@ -178,6 +232,21 @@ async function run() {
             console.log('sending email')
             sendAppointmentEmail(booking)
             return res.send({ success: true, result })
+        })
+
+        app.patch('/booking/:id', async (req, res) => {
+            const id = req.params.id
+            const payment = req.body
+            const filter = {_id: ObjectId(id)}
+            const updatedDoc = {
+                $set:{
+                    paid: true,
+                    transactionId: payment.transactionId
+                }
+            }
+            const result = await paymentCollection.insertOne(payment)
+            const updatedBooking = await bookingCollection.updateOne(filter, updatedDoc)
+            res.send(updatedDoc)
         })
 
         app.get('/doctor', async (req, res) => {
